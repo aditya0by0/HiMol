@@ -18,6 +18,7 @@ from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_err
 
 from splitters import scaffold_split, random_split
 import pandas as pd
+import wandb
 
 
 
@@ -179,8 +180,18 @@ def main():
     parser.add_argument('--eval_train', type=int, default = 1, help='evaluating training or not')
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     parser.add_argument('--GNN_para', type=bool, default = True, help='if the parameter of pretrain update')
+    parser.add_argument('--wandb_project', type=str, default='himol-finetune',
+                        help='Weights & Biases project name')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                        help='Weights & Biases run name (default: dataset-seed)')
+    parser.add_argument('--wandb_mode', type=str, default='online',
+                        choices=['online', 'offline', 'disabled'],
+                        help='Weights & Biases mode (use "disabled" to turn off logging)')
     args = parser.parse_args()
 
+    run_name = args.wandb_run_name or ('%s-run%d' % (args.dataset, args.runseed))
+    run = wandb.init(project=args.wandb_project, name=run_name,
+                     mode=args.wandb_mode, config=vars(args))
 
     torch.manual_seed(args.runseed)
     np.random.seed(args.runseed)
@@ -290,8 +301,13 @@ def main():
             train_auc_list.append(float('{:.4f}'.format(train_auc)))
 
             torch.save(model.state_dict(), finetune_model_save_path)
-            
+
             print("train_auc: %f val_auc: %f test_auc: %f" %(train_auc, val_auc, test_auc))
+
+            run.log({'epoch': epoch,
+                     'train/auc': train_auc, 'val/auc': val_auc, 'test/auc': test_auc,
+                     'train/loss': float(train_loss), 'val/loss': float(val_loss),
+                     'test/loss': float(test_loss)})
 
 
     elif task_type == 'reg':
@@ -323,6 +339,13 @@ def main():
             print("train_mse: %f val_mse: %f test_mse: %f" %(train_mse, val_mse, test_mse))
             print("train_mae: %f val_mae: %f test_mae: %f" %(train_mae, val_mae, test_mae))
             print("train_rmse: %f val_rmse: %f test_rmse: %f" %(train_rmse, val_rmse, test_rmse))
+
+            run.log({'epoch': epoch,
+                     'train/mse': train_mse, 'val/mse': val_mse, 'test/mse': test_mse,
+                     'train/mae': train_mae, 'val/mae': val_mae, 'test/mae': test_mae,
+                     'train/rmse': train_rmse, 'val/rmse': val_rmse, 'test/rmse': test_rmse})
+
+    run.finish()
 
 
 

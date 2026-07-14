@@ -16,3 +16,6 @@ finetune/dataset/
 saved_model/
 finetune/model_checkpoints/
 *.pth
+
+# Preprocessing cache (rebuilt on first run)
+*.himolcache.pt

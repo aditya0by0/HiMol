@@ -1,7 +1,10 @@
+import os
 import torch
 from torch.utils.data import Dataset
 # from mol_tree import MolTree
 import numpy as np
+from multiprocessing import Pool
+from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import BRICS
 from rdkit.Chem import Descriptors
@@ -11,23 +14,84 @@ from torch_geometric.data import Data
 from chemutils import get_mol, get_clique_mol
 
 
+# Tensor-valued MolGraph attributes read downstream (batching + decoder).
+_GRAPH_TENSOR_ATTRS = ('x', 'edge_index', 'edge_attr',
+                       'x_nosuper', 'edge_index_nosuper', 'edge_attr_nosuper')
+
+
+def _build_molgraph(smiles):
+    """Build a MolGraph from a SMILES string for the preprocessing cache.
+
+    The expensive RDKit BRICS motif decomposition happens here. The RDKit
+    ``mol`` object is dropped afterwards because nothing downstream of the
+    data loader uses it (the decoder and batching only read the cached
+    tensors), which keeps the cache small.
+
+    Runs inside a multiprocessing worker, so the torch tensors are converted
+    to numpy before returning: torch registers a shared-memory reduction for
+    tensors sent across processes, and streaming 250k of them through the pool
+    exhausts the Windows paging file (error 1455). numpy arrays pickle by copy.
+    ``_to_torch`` restores the tensors in the parent process. Returns ``None``
+    if RDKit cannot parse/decompose the molecule so callers can skip it.
+    """
+    try:
+        mol_graph = MolGraph(smiles)
+        mol_graph.mol = None
+        for attr in _GRAPH_TENSOR_ATTRS:
+            setattr(mol_graph, attr, getattr(mol_graph, attr).numpy())
+        return mol_graph
+    except Exception:
+        return None
+
+
+def _to_torch(mol_graph):
+    for attr in _GRAPH_TENSOR_ATTRS:
+        setattr(mol_graph, attr, torch.from_numpy(getattr(mol_graph, attr)))
+    return mol_graph
+
+
 class MoleculeDataset(Dataset):
 
-    def __init__(self, data_file):
+    def __init__(self, data_file, cache_path=None, num_proc=None):
         with open(data_file) as f:
             self.data = [line.strip("\r\n ").split()[0] for line in f]
             # print('data',self.data)
 
+        # The motif decomposition is deterministic, so precompute every
+        # MolGraph once and cache it to disk instead of recomputing on every
+        # __getitem__ (i.e. every epoch). Subsequent runs load the cache.
+        if cache_path is None:
+            cache_path = data_file + '.himolcache.pt'
+        self.cache_path = cache_path
+
+        if os.path.exists(cache_path):
+            self.graphs = torch.load(cache_path, weights_only=False)
+            print('Loaded %d cached molecule graphs from %s' % (len(self.graphs), cache_path))
+        else:
+            self.graphs = self._build_cache(num_proc)
+
+    def _build_cache(self, num_proc):
+        if num_proc is None:
+            num_proc = min(max(1, (os.cpu_count() or 2) - 1), 16)
+        print('Preprocessing %d molecules once with %d processes (cache: %s)...'
+              % (len(self.data), num_proc, self.cache_path))
+        graphs = []
+        with Pool(num_proc) as pool:
+            for mol_graph in tqdm(pool.imap(_build_molgraph, self.data, chunksize=64),
+                                  total=len(self.data), desc='Preprocessing'):
+                if mol_graph is not None:
+                    graphs.append(_to_torch(mol_graph))
+        skipped = len(self.data) - len(graphs)
+        print('Built %d molecule graphs (%d skipped). Saving cache to %s'
+              % (len(graphs), skipped, self.cache_path))
+        torch.save(graphs, self.cache_path)
+        return graphs
+
     def __len__(self):
-        return len(self.data)
+        return len(self.graphs)
 
     def __getitem__(self, idx):
-        smiles = self.data[idx]
-        # print('smiles',smiles)
-        mol_graph = MolGraph(smiles)  #motif
-        # mol_tree.recover()
-        # mol_tree.assemble()
-        return mol_graph
+        return self.graphs[idx]
 
 
 # allowable node and edge features

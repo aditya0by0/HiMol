@@ -12,8 +12,9 @@ import sys
 import logging, time
 from tqdm import tqdm
 import numpy as np
+import wandb
 from gnn_model import GNN
-from decoder import Model_decoder  
+from decoder import Model_decoder
 
 sys.path.append('./util/')
 
@@ -48,6 +49,11 @@ def train(model_list, loader, optimizer_list, device):
 
     model.train()
     model_decoder.train()
+    # epoch-level accumulators for wandb logging
+    epoch_totals = {'loss': 0.0, 'bond_if_auc': 0.0, 'bond_if_ap': 0.0,
+                    'bond_type_acc': 0.0, 'atom_type_acc': 0.0,
+                    'atom_num_rmse': 0.0, 'bond_num_rmse': 0.0}
+    num_steps = 0
     if_auc, if_ap, type_acc, a_type_acc, a_num_rmse, b_num_rmse = 0, 0, 0, 0, 0, 0
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         #batch内的每个item是MolTree类型
@@ -67,6 +73,15 @@ def train(model_list, loader, optimizer_list, device):
 
         optimizer_list.step()
 
+        epoch_totals['loss'] += loss.item()
+        epoch_totals['bond_if_auc'] += float(bond_if_auc)
+        epoch_totals['bond_if_ap'] += float(bond_if_ap)
+        epoch_totals['bond_type_acc'] += float(bond_type_acc)
+        epoch_totals['atom_type_acc'] += float(atom_type_acc)
+        epoch_totals['atom_num_rmse'] += float(atom_num_rmse)
+        epoch_totals['bond_num_rmse'] += float(bond_num_rmse)
+        num_steps += 1
+
         if_auc += bond_if_auc
         if_ap += bond_if_ap
         type_acc += bond_type_acc
@@ -75,16 +90,19 @@ def train(model_list, loader, optimizer_list, device):
         b_num_rmse += bond_num_rmse
 
         if (step+1) % 20 == 0:
-            if_auc = if_auc / 20 
-            if_ap = if_ap / 20 
-            type_acc = type_acc / 20 
+            if_auc = if_auc / 20
+            if_ap = if_ap / 20
+            type_acc = type_acc / 20
             a_type_acc = a_type_acc / 20
             a_num_rmse = a_num_rmse / 20
             b_num_rmse = b_num_rmse / 20
 
             print('Batch:',step,'loss:',loss.item())
             if_auc, if_ap, type_acc, a_type_acc, a_num_rmse, b_num_rmse = 0, 0, 0, 0, 0, 0
-           
+
+    num_steps = max(num_steps, 1)
+    return {k: v / num_steps for k, v in epoch_totals.items()}
+
 
 def main():
     # Training settings
@@ -112,10 +130,21 @@ def main():
     parser.add_argument('--gnn_type', type=str, default="gin")
     parser.add_argument('--output_model_file', type=str, default='./saved_model/pretrain.pth',
                         help='filename to output the pre-trained model')
-    parser.add_argument('--num_workers', type=int, default=8, help='number of workers for dataset loading')
+    # The preprocessing cache makes __getitem__ a trivial lookup, so extra
+    # DataLoader workers only duplicate the cached graphs across processes.
+    parser.add_argument('--num_workers', type=int, default=0, help='number of workers for dataset loading')
     parser.add_argument("--hidden_size", type=int, default=512, help='hidden size')
+    parser.add_argument('--wandb_project', type=str, default='himol-pretrain',
+                        help='Weights & Biases project name')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                        help='Weights & Biases run name (default: auto)')
+    parser.add_argument('--wandb_mode', type=str, default='online',
+                        choices=['online', 'offline', 'disabled'],
+                        help='Weights & Biases mode (use "disabled" to turn off logging)')
     args = parser.parse_args()
 
+    run = wandb.init(project=args.wandb_project, name=args.wandb_run_name,
+                     mode=args.wandb_mode, config=vars(args))
 
     torch.manual_seed(0)
     np.random.seed(0)
@@ -135,10 +164,14 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         print('====epoch',epoch)
-        train(model_list, loader, optimizer, device)
+        metrics = train(model_list, loader, optimizer, device)
+        print('====epoch', epoch, 'train metrics:', metrics)
+        run.log({'epoch': epoch, **{'train/' + k: v for k, v in metrics.items()}})
 
         if not args.output_model_file == "":
             torch.save(model.state_dict(), args.output_model_file)
+
+    run.finish()
 
 
 if __name__ == "__main__":
