@@ -14,9 +14,9 @@ from tqdm import tqdm
 import numpy as np
 
 from model import GNN, GNN_graphpred
-from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, f1_score
 
-from splitters import scaffold_split, random_split
+from splitters import scaffold_split, random_split, chebi_split
 import pandas as pd
 import wandb
 
@@ -106,6 +106,50 @@ def eval(args, model, device, loader):
 
     return eval_roc, loss
 
+def eval_chebi(args, model, device, loader):
+    """Multi-label evaluation for ChEBI: mean per-task ROC-AUC plus micro/macro
+    F1 (the standard chebai metric). Returns a dict of metrics."""
+    model.eval()
+    y_true = []
+    y_scores = []
+
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        batch = batch.to(device)
+        with torch.no_grad():
+            pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+        y_true.append(batch.y.view(pred.shape))
+        y_scores.append(pred)
+
+    y_true = torch.cat(y_true, dim=0).cpu().numpy()      # -1 / +1
+    y_scores = torch.cat(y_scores, dim=0).cpu().numpy()  # logits
+
+    # loss over all valid (non-missing) entries; ChEBI has no missing labels
+    is_valid = y_true ** 2 > 0
+    loss_mat = criterion(torch.tensor(y_scores).double(),
+                         torch.tensor((y_true + 1) / 2).double())
+    loss_mat = torch.where(torch.tensor(is_valid), loss_mat,
+                           torch.zeros_like(loss_mat))
+    loss = float(torch.sum(loss_mat) / max(int(is_valid.sum()), 1))
+
+    # per-task ROC-AUC, skipping tasks without both classes present
+    roc_list = []
+    for i in range(y_true.shape[1]):
+        if np.sum(y_true[:, i] == 1) > 0 and np.sum(y_true[:, i] == -1) > 0:
+            valid_i = y_true[:, i] ** 2 > 0
+            roc_list.append(roc_auc_score((y_true[valid_i, i] + 1) / 2,
+                                          y_scores[valid_i, i]))
+    eval_roc = sum(roc_list) / len(roc_list) if roc_list else 0.0
+
+    # micro / macro F1 at logit threshold 0
+    y_true_bin = (y_true + 1) / 2          # 0 / 1
+    y_pred_bin = (y_scores > 0).astype(int)
+    micro_f1 = f1_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
+    macro_f1 = f1_score(y_true_bin, y_pred_bin, average='macro', zero_division=0)
+
+    return {'auc': eval_roc, 'micro_f1': micro_f1, 'macro_f1': macro_f1,
+            'loss': loss}
+
+
 def eval_reg(args, model, device, loader):
     model.eval()
     y_true = []
@@ -177,6 +221,8 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help = "Seed for splitting the dataset.")
     parser.add_argument('--runseed', type=int, default=0, help = "Seed for minibatch selection, random initialization.")
     parser.add_argument('--split', type = str, default="scaffold", help = "random or scaffold or random_scaffold")
+    parser.add_argument('--split_file', type=str, default='',
+                        help='python-chebai split CSV (id,split); required for --dataset chebi')
     parser.add_argument('--eval_train', type=int, default = 1, help='evaluating training or not')
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     parser.add_argument('--GNN_para', type=bool, default = True, help='if the parameter of pretrain update')
@@ -199,7 +245,7 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.runseed)
 
-    if args.dataset in ['tox21', 'hiv', 'pcba', 'muv', 'bace', 'bbbp', 'toxcast', 'sider', 'clintox', 'mutag']:
+    if args.dataset in ['tox21', 'hiv', 'pcba', 'muv', 'bace', 'bbbp', 'toxcast', 'sider', 'clintox', 'mutag', 'chebi']:
         task_type = 'cls'
     else:
         task_type = 'reg'
@@ -231,6 +277,10 @@ def main():
         num_tasks = 12
     elif args.dataset == 'qm9':
         num_tasks = 12
+    elif args.dataset == 'chebi':
+        # one task per ChEBI class, derived from the raw classes.txt
+        with open('dataset/chebi/raw/classes.txt', encoding='utf-8') as f:
+            num_tasks = sum(1 for line in f if line.strip() != '')
     else:
         raise ValueError("Invalid dataset name.")
 
@@ -240,7 +290,15 @@ def main():
 
     print(dataset)
     
-    if args.split == "scaffold":
+    if args.dataset == 'chebi':
+        if args.split_file == '':
+            raise ValueError("--split_file is required for --dataset chebi")
+        ids_list = pd.read_csv('dataset/chebi/processed/chebi_ids.csv',
+                               header=None, dtype=str)[0].tolist()
+        train_dataset, valid_dataset, test_dataset = chebi_split(
+            dataset, ids_list, args.split_file)
+        print("chebi split from %s" % args.split_file)
+    elif args.split == "scaffold":
         smiles_list = pd.read_csv('dataset/' + args.dataset + '/processed/smiles.csv', header=None)[0].tolist()
         train_dataset, valid_dataset, test_dataset, _ = scaffold_split(dataset, smiles_list, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1)
         print("scaffold")
@@ -282,11 +340,42 @@ def main():
 
    
     # training based on task type
-    if task_type == 'cls':
+    if task_type == 'cls' and args.dataset == 'chebi':
+        # multi-label: report both micro/macro F1 (chebai standard) and mean AUC
+        for epoch in range(1, args.epochs + 1):
+            print('====epoch:', epoch)
+
+            train(model, device, train_loader, optimizer)
+
+            print('====Evaluation')
+            log = {'epoch': epoch}
+            if args.eval_train:
+                train_m = eval_chebi(args, model, device, train_loader)
+                for k, v in train_m.items():
+                    log['train/' + k] = v
+            else:
+                print('omit the training accuracy computation')
+            val_m = eval_chebi(args, model, device, val_loader)
+            test_m = eval_chebi(args, model, device, test_loader)
+            for k, v in val_m.items():
+                log['val/' + k] = v
+            for k, v in test_m.items():
+                log['test/' + k] = v
+
+            torch.save(model.state_dict(), finetune_model_save_path)
+
+            print("val   micro_f1: %f macro_f1: %f auc: %f" %
+                  (val_m['micro_f1'], val_m['macro_f1'], val_m['auc']))
+            print("test  micro_f1: %f macro_f1: %f auc: %f" %
+                  (test_m['micro_f1'], test_m['macro_f1'], test_m['auc']))
+
+            run.log(log)
+
+    elif task_type == 'cls':
         train_auc_list, test_auc_list = [], []
         for epoch in range(1, args.epochs+1):
             print('====epoch:',epoch)
-            
+
             train(model, device, train_loader, optimizer)
 
             print('====Evaluation')
