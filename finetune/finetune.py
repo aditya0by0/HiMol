@@ -2,7 +2,7 @@ import argparse
 from cmath import inf
 
 from loader import MoleculeDataset
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 
 
 import torch

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Downstream datasets (downloaded separately) and processed caches
+finetune/dataset/
+
+# Model outputs / checkpoints
+saved_model/
+finetune/model_checkpoints/
+*.pth

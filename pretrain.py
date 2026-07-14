@@ -24,6 +24,10 @@ from data_utils import *
 lg = rdkit.RDLogger.logger()
 lg.setLevel(rdkit.RDLogger.CRITICAL)
 
+def identity_collate(batch):
+    return batch
+
+
 def group_node_rep(node_rep, batch_size, num_part):
     group = []
     super_group = []
@@ -121,7 +125,7 @@ def main():
 
     dataset = MoleculeDataset(args.dataset)
 
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=lambda x:x, drop_last=True)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=identity_collate, drop_last=True)
 
     model = GNN(args.num_layer, args.emb_dim, JK=args.JK, drop_ratio=args.dropout_ratio, gnn_type=args.gnn_type).to(device)
     model_decoder = Model_decoder(args.hidden_size, device).to(device)
