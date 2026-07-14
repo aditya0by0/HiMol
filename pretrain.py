@@ -44,17 +44,19 @@ def group_node_rep(node_rep, batch_size, num_part):
     return group, super_group
 
 
-def train(model_list, loader, optimizer_list, device):
+def train(model_list, loader, optimizer_list, device, metric_every=20):
     model, model_decoder = model_list
 
     model.train()
     model_decoder.train()
-    # epoch-level accumulators for wandb logging
-    epoch_totals = {'loss': 0.0, 'bond_if_auc': 0.0, 'bond_if_ap': 0.0,
-                    'bond_type_acc': 0.0, 'atom_type_acc': 0.0,
+    # epoch-level accumulators for wandb logging. bond_if_auc/bond_if_ap come
+    # from sklearn calls that only run on sampled steps, so they average over
+    # their own counter (metric_steps) rather than every step.
+    cheap_totals = {'loss': 0.0, 'bond_type_acc': 0.0, 'atom_type_acc': 0.0,
                     'atom_num_rmse': 0.0, 'bond_num_rmse': 0.0}
+    sampled_totals = {'bond_if_auc': 0.0, 'bond_if_ap': 0.0}
     num_steps = 0
-    if_auc, if_ap, type_acc, a_type_acc, a_num_rmse, b_num_rmse = 0, 0, 0, 0, 0, 0
+    metric_steps = 0
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         #batch内的每个item是MolTree类型
         batch_size = len(batch)
@@ -65,7 +67,8 @@ def train(model_list, loader, optimizer_list, device):
         num_part = graph_batch.num_part
         node_rep, super_node_rep = group_node_rep(node_rep, batch_size, num_part)
 
-        loss, bond_if_auc, bond_if_ap, bond_type_acc, atom_type_acc, atom_num_rmse, bond_num_rmse = model_decoder(batch, node_rep, super_node_rep)
+        compute_metrics = ((step + 1) % metric_every == 0)
+        loss, bond_if_auc, bond_if_ap, bond_type_acc, atom_type_acc, atom_num_rmse, bond_num_rmse = model_decoder(batch, node_rep, super_node_rep, compute_metrics=compute_metrics)
 
         optimizer_list.zero_grad()
 
@@ -73,35 +76,24 @@ def train(model_list, loader, optimizer_list, device):
 
         optimizer_list.step()
 
-        epoch_totals['loss'] += loss.item()
-        epoch_totals['bond_if_auc'] += float(bond_if_auc)
-        epoch_totals['bond_if_ap'] += float(bond_if_ap)
-        epoch_totals['bond_type_acc'] += float(bond_type_acc)
-        epoch_totals['atom_type_acc'] += float(atom_type_acc)
-        epoch_totals['atom_num_rmse'] += float(atom_num_rmse)
-        epoch_totals['bond_num_rmse'] += float(bond_num_rmse)
+        cheap_totals['loss'] += loss.item()
+        cheap_totals['bond_type_acc'] += float(bond_type_acc)
+        cheap_totals['atom_type_acc'] += float(atom_type_acc)
+        cheap_totals['atom_num_rmse'] += float(atom_num_rmse)
+        cheap_totals['bond_num_rmse'] += float(bond_num_rmse)
         num_steps += 1
 
-        if_auc += bond_if_auc
-        if_ap += bond_if_ap
-        type_acc += bond_type_acc
-        a_type_acc += atom_type_acc
-        a_num_rmse += atom_num_rmse
-        b_num_rmse += bond_num_rmse
-
-        if (step+1) % 20 == 0:
-            if_auc = if_auc / 20
-            if_ap = if_ap / 20
-            type_acc = type_acc / 20
-            a_type_acc = a_type_acc / 20
-            a_num_rmse = a_num_rmse / 20
-            b_num_rmse = b_num_rmse / 20
-
-            print('Batch:',step,'loss:',loss.item())
-            if_auc, if_ap, type_acc, a_type_acc, a_num_rmse, b_num_rmse = 0, 0, 0, 0, 0, 0
+        if compute_metrics:
+            sampled_totals['bond_if_auc'] += float(bond_if_auc)
+            sampled_totals['bond_if_ap'] += float(bond_if_ap)
+            metric_steps += 1
+            print('Batch:', step, 'loss:', loss.item())
 
     num_steps = max(num_steps, 1)
-    return {k: v / num_steps for k, v in epoch_totals.items()}
+    metrics = {k: v / num_steps for k, v in cheap_totals.items()}
+    if metric_steps > 0:
+        metrics.update({k: v / metric_steps for k, v in sampled_totals.items()})
+    return metrics
 
 
 def main():
@@ -134,6 +126,8 @@ def main():
     # DataLoader workers only duplicate the cached graphs across processes.
     parser.add_argument('--num_workers', type=int, default=0, help='number of workers for dataset loading')
     parser.add_argument("--hidden_size", type=int, default=512, help='hidden size')
+    parser.add_argument('--metric_every', type=int, default=20,
+                        help='compute the expensive bond AUC/AP monitoring metrics every N steps (1 = every step)')
     parser.add_argument('--wandb_project', type=str, default='himol-pretrain',
                         help='Weights & Biases project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
@@ -164,7 +158,7 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         print('====epoch',epoch)
-        metrics = train(model_list, loader, optimizer, device)
+        metrics = train(model_list, loader, optimizer, device, metric_every=args.metric_every)
         print('====epoch', epoch, 'train metrics:', metrics)
         run.log({'epoch': epoch, **{'train/' + k: v for k, v in metrics.items()}})
 
