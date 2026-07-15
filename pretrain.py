@@ -128,7 +128,9 @@ def main():
     parser.add_argument("--hidden_size", type=int, default=512, help='hidden size')
     parser.add_argument('--metric_every', type=int, default=20,
                         help='compute the expensive bond AUC/AP monitoring metrics every N steps (1 = every step)')
-    parser.add_argument('--wandb_project', type=str, default='himol-pretrain',
+    parser.add_argument('--wandb_entity', type=str, default='chebai',
+                        help='Weights & Biases entity (username or team name)')
+    parser.add_argument('--wandb_project', type=str, default='himol',
                         help='Weights & Biases project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
                         help='Weights & Biases run name (default: auto)')
@@ -137,7 +139,7 @@ def main():
                         help='Weights & Biases mode (use "disabled" to turn off logging)')
     args = parser.parse_args()
 
-    run = wandb.init(project=args.wandb_project, name=args.wandb_run_name,
+    run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, name=args.wandb_run_name,
                      mode=args.wandb_mode, config=vars(args))
 
     torch.manual_seed(0)

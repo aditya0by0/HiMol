@@ -226,7 +226,9 @@ def main():
     parser.add_argument('--eval_train', type=int, default = 1, help='evaluating training or not')
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     parser.add_argument('--GNN_para', type=bool, default = True, help='if the parameter of pretrain update')
-    parser.add_argument('--wandb_project', type=str, default='himol-finetune',
+    parser.add_argument('--wandb_entity', type=str, default='chebai',
+                        help='Weights & Biases entity (username or team name)')
+    parser.add_argument('--wandb_project', type=str, default='himol',
                         help='Weights & Biases project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
                         help='Weights & Biases run name (default: dataset-seed)')
@@ -236,7 +238,7 @@ def main():
     args = parser.parse_args()
 
     run_name = args.wandb_run_name or ('%s-run%d' % (args.dataset, args.runseed))
-    run = wandb.init(project=args.wandb_project, name=run_name,
+    run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, name=run_name,
                      mode=args.wandb_mode, config=vars(args))
 
     torch.manual_seed(args.runseed)
