@@ -356,7 +356,7 @@ class GNN_graphpred(torch.nn.Module):
             torch.nn.Linear((self.emb_dim)//2, self.num_tasks))
 
     def from_pretrained(self, model_file):
-        self.gnn.load_state_dict(torch.load(model_file), weights_only=False)
+        self.gnn.load_state_dict(torch.load(model_file, weights_only=False))
 
     def super_node_rep(self, node_rep, batch):
         super_group = []

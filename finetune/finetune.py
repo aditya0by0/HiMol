@@ -220,8 +220,8 @@ def main():
                         help='how the node features across layers are combined. last, sum, max or concat')
     parser.add_argument('--gnn_type', type=str, default="gin",
                         help='gnn_type (gat, gin, gcn, graphsage)')
-    parser.add_argument('--dataset', type=str, default = 'esol', 
-                        help='[bbbp, bace, sider, clintox, sider,tox21, toxcast, esol,freesolv,lipophilicity]')
+    parser.add_argument('--dataset', type=str, default = 'chebi', 
+                        help='[chebi, bbbp, bace, sider, clintox, sider,tox21, toxcast, esol,freesolv,lipophilicity]')
     parser.add_argument('--input_model_file', type=str, default = '../saved_model/pretrain.pth', help='filename to read the model (if there is any)')
     parser.add_argument('--filename', type=str, default = '', help='output filename')
     parser.add_argument('--seed', type=int, default=42, help = "Seed for splitting the dataset.")
@@ -292,13 +292,13 @@ def main():
     else:
         raise ValueError("Invalid dataset name.")
 
-   
     #set up dataset
     dataset = MoleculeDataset("dataset/" + args.dataset, dataset=args.dataset)
-
+    
     print(dataset)
     
     if args.dataset == 'chebi':
+        print("Using ChEBI dataset")
         if args.split_file == '':
             raise ValueError("--split_file is required for --dataset chebi")
         ids_list = pd.read_csv('dataset/chebi/processed/chebi_ids.csv',
