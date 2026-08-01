@@ -24,17 +24,17 @@ class MacroF1(torchmetrics.Metric):
 
         self.add_state(
             "true_positives",
-            default=torch.zeros(num_labels, dtype=torch.int),
+            default=torch.zeros(num_labels, dtype=torch.int64),
             dist_reduce_fx="sum",
         )
         self.add_state(
             "positive_predictions",
-            default=torch.zeros(num_labels, dtype=torch.int),
+            default=torch.zeros(num_labels, dtype=torch.int64),
             dist_reduce_fx="sum",
         )
         self.add_state(
             "positive_labels",
-            default=torch.zeros(num_labels, dtype=torch.int),
+            default=torch.zeros(num_labels, dtype=torch.int64),
             dist_reduce_fx="sum",
         )
         self.threshold = threshold
@@ -47,13 +47,12 @@ class MacroF1(torchmetrics.Metric):
             preds (torch.Tensor): Predictions from the model.
             labels (torch.Tensor): Ground truth labels.
         """
-        tps = torch.sum(
-            torch.logical_and(preds > self.threshold, labels.to(torch.bool)),
-            dim=0,
-        )
-        self.true_positives += tps
-        self.positive_predictions += torch.sum(preds > self.threshold, dim=0)
-        self.positive_labels += torch.sum(labels, dim=0)
+        preds_bool = (preds > self.threshold)
+        labels_int = labels.to(torch.int64)
+        tps = torch.sum(torch.logical_and(preds_bool, labels_int.to(torch.bool)), dim=0)
+        self.true_positives += tps.to(torch.int64)
+        self.positive_predictions += torch.sum(preds_bool, dim=0).to(torch.int64)
+        self.positive_labels += torch.sum(labels_int, dim=0).to(torch.int64)
 
     def compute(self) -> torch.Tensor:
         """

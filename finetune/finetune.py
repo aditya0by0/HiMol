@@ -22,8 +22,19 @@ import wandb
 
 from metrics import MacroF1
 from torchmetrics.classification import MultilabelF1Score
+import os 
 
 criterion = nn.BCEWithLogitsLoss(reduction = "none")
+
+
+def print_parameter_summary(module, title):
+    print(f"\n{title}")
+    print("-" * len(title))
+    total_params = 0
+    for name, param in module.named_parameters():
+        total_params += param.numel()
+        print(f"  {name}: shape={tuple(param.shape)}, requires_grad={param.requires_grad}")
+    print(f"Total parameters: {total_params:,}")
 
 
 def train(model, device, loader, optimizer):
@@ -332,6 +343,13 @@ def main():
     
     model.to(device)
 
+    if args.dataset == 'chebi':
+        print_parameter_summary(model.gnn, "GNN model parameters")
+        print_parameter_summary(model.graph_pred_linear, "Classification head parameters")
+        head_out_features = getattr(model.graph_pred_linear, "out_features", None)
+        if head_out_features is not None:
+            print(f"Classification head output size: {head_out_features}")
+
     #set up optimizer
     #different learning rate for different part of GNN
     model_param_group = []
@@ -345,6 +363,7 @@ def main():
     print(optimizer)
 
     finetune_model_save_path = './model_checkpoints/' + args.dataset + '.pth'
+    os.makedirs(os.path.dirname(finetune_model_save_path), exist_ok=True)
 
    
     # training based on task type
