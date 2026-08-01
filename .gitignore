@@ -19,3 +19,10 @@ finetune/model_checkpoints/
 
 # Preprocessing cache (rebuilt on first run)
 *.himolcache.pt
+
+saved_model/
+wandb/
+*.err
+*.out
+*.sh
+*.json

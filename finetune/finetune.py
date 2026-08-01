@@ -20,8 +20,8 @@ from splitters import scaffold_split, random_split, chebi_split
 import pandas as pd
 import wandb
 
-
-
+from finetune.metrics import MacroF1
+from torchmetrics.classification import MultilabelF1Score
 
 criterion = nn.BCEWithLogitsLoss(reduction = "none")
 
@@ -143,8 +143,13 @@ def eval_chebi(args, model, device, loader):
     # micro / macro F1 at logit threshold 0
     y_true_bin = (y_true + 1) / 2          # 0 / 1
     y_pred_bin = (y_scores > 0).astype(int)
-    micro_f1 = f1_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
-    macro_f1 = f1_score(y_true_bin, y_pred_bin, average='macro', zero_division=0)
+    # micro_f1 = f1_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
+    # macro_f1 = f1_score(y_true_bin, y_pred_bin, average='macro', zero_division=0)
+    micro_f1_obj = MultilabelF1Score(num_labels=y_true.shape[1], average="macro")
+    macro_f1_obj = MacroF1(num_labels=y_true.shape[1])
+
+    micro_f1 = micro_f1_obj(torch.tensor(y_pred_bin), torch.tensor(y_true_bin))
+    macro_f1 = macro_f1_obj(torch.tensor(y_pred_bin), torch.tensor(y_true_bin))
 
     return {'auc': eval_roc, 'micro_f1': micro_f1, 'macro_f1': macro_f1,
             'loss': loss}

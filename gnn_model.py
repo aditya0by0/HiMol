@@ -256,6 +256,8 @@ class GNN(torch.nn.Module):
                 self.gnns.append(GATConv(emb_dim))
             elif gnn_type == "graphsage":
                 self.gnns.append(GraphSAGEConv(emb_dim))
+            else:
+                raise ValueError('Undefined GNN type called {}'.format(gnn_type))
 
         # ###List of batchnorms
         self.batch_norms = torch.nn.ModuleList()

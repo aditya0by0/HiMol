@@ -1,26 +1,27 @@
 import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
+import logging
+import os
+import sys
+import time
 
+import numpy as np
 
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
 import rdkit
-import sys
-import logging, time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-import numpy as np
+
 import wandb
-from gnn_model import GNN
 from decoder import Model_decoder
+from gnn_model import GNN
 
 sys.path.append('./util/')
 
 from data_utils import *
-
-
 
 lg = rdkit.RDLogger.logger()
 lg.setLevel(rdkit.RDLogger.CRITICAL)
@@ -87,7 +88,7 @@ def train(model_list, loader, optimizer_list, device, metric_every=20):
             sampled_totals['bond_if_auc'] += float(bond_if_auc)
             sampled_totals['bond_if_ap'] += float(bond_if_ap)
             metric_steps += 1
-            print('Batch:', step, 'loss:', loss.item())
+            # print('Batch:', step, 'loss:', loss.item())
 
     num_steps = max(num_steps, 1)
     metrics = {k: v / num_steps for k, v in cheap_totals.items()}
@@ -103,7 +104,7 @@ def main():
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='input batch size for training (default: 32)')
-    parser.add_argument('--epochs', type=int, default=1,
+    parser.add_argument('--epochs', type=int, default=100,
                         help='number of epochs to train (default: 100)')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='learning rate (default: 0.001)')
@@ -120,7 +121,7 @@ def main():
     parser.add_argument('--dataset', type=str, default='./data/zinc/all.txt',
                         help='root directory of dataset. For now, only classification.')
     parser.add_argument('--gnn_type', type=str, default="gin")
-    parser.add_argument('--output_model_file', type=str, default='./saved_model/pretrain.pth',
+    parser.add_argument('--output_model_file', type=str, default='./.saved_model/pretrain.pth',
                         help='filename to output the pre-trained model')
     # The preprocessing cache makes __getitem__ a trivial lookup, so extra
     # DataLoader workers only duplicate the cached graphs across processes.
@@ -165,6 +166,7 @@ def main():
         run.log({'epoch': epoch, **{'train/' + k: v for k, v in metrics.items()}})
 
         if not args.output_model_file == "":
+            os.makedirs(os.path.dirname(args.output_model_file), exist_ok=True)
             torch.save(model.state_dict(), args.output_model_file)
 
     run.finish()
