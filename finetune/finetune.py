@@ -20,10 +20,83 @@ from splitters import scaffold_split, random_split, chebi_split
 import pandas as pd
 import wandb
 
-from finetune.metrics import MacroF1
+import torchmetrics
 from torchmetrics.classification import MultilabelF1Score
 
 criterion = nn.BCEWithLogitsLoss(reduction = "none")
+
+class MacroF1(torchmetrics.Metric):
+    """
+    Computes the Macro F1 score, which is the unweighted mean of F1 scores for each class.
+    This implementation differs from torchmetrics.classification.MultilabelF1Score in the behaviour for undefined
+    values (i.e., classes where TP+FN=0). The torchmetrics implementation sets these classes to a default value.
+    Here, the mean is only taken over classes which have at least one positive sample.
+
+    Args:
+        num_labels (int): Number of classes/labels.
+        dist_sync_on_step (bool, optional): Synchronize metric state across processes at each forward
+            before returning the value at the step. Default: False.
+        threshold (float, optional): Threshold for converting predicted probabilities to binary (0, 1) predictions.
+            Default: 0.5.
+    """
+
+    def __init__(
+        self, num_labels: int, dist_sync_on_step: bool = False, threshold: float = 0.5
+    ):
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+
+        self.add_state(
+            "true_positives",
+            default=torch.zeros(num_labels, dtype=torch.int),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "positive_predictions",
+            default=torch.zeros(num_labels, dtype=torch.int),
+            dist_reduce_fx="sum",
+        )
+        self.add_state(
+            "positive_labels",
+            default=torch.zeros(num_labels, dtype=torch.int),
+            dist_reduce_fx="sum",
+        )
+        self.threshold = threshold
+
+    def update(self, preds: torch.Tensor, labels: torch.Tensor) -> None:
+        """
+        Update the state (TPs, Positive Predictions, Positive labels) with the current batch of predictions and labels.
+
+        Args:
+            preds (torch.Tensor): Predictions from the model.
+            labels (torch.Tensor): Ground truth labels.
+        """
+        tps = torch.sum(
+            torch.logical_and(preds > self.threshold, labels.to(torch.bool)),
+            dim=0,
+        )
+        self.true_positives += tps
+        self.positive_predictions += torch.sum(preds > self.threshold, dim=0)
+        self.positive_labels += torch.sum(labels, dim=0)
+
+    def compute(self) -> torch.Tensor:
+        """
+        Compute the Macro F1 score.
+
+        Returns:
+            torch.Tensor: The computed Macro F1 score.
+        """
+
+        # ignore classes without positive labels
+        # classes with positive labels, but no positive predictions will get a precision of "nan" (0 divided by 0),
+        # which is propagated to the classwise_f1 and then turned into 0
+        mask = self.positive_labels != 0
+        precision = self.true_positives[mask] / self.positive_predictions[mask]
+        recall = self.true_positives[mask] / self.positive_labels[mask]
+        classwise_f1 = 2 * precision * recall / (precision + recall)
+        # if (precision and recall are 0) or (precision is nan), set f1 to 0
+        classwise_f1 = classwise_f1.nan_to_num()
+        return torch.mean(classwise_f1)
+
 
 def train(model, device, loader, optimizer):
     model.train()
@@ -199,10 +272,10 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch implementation of pre-training of graph neural networks')
     parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
-    parser.add_argument('--batch_size', type=int, default=32,
-                        help='input batch size for training (default: 32)')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='number of epochs to train (default: 100)')
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='input batch size for training (default: 128)')
+    parser.add_argument('--epochs', type=int, default=200,
+                        help='number of epochs to train (default: 200)')
     parser.add_argument('--lr_feat', type=float, default=0.001,
                         help='learning rate (default: 0.001)')
     parser.add_argument('--lr_pred', type=float, default=0.001,
