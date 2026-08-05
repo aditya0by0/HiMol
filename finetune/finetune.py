@@ -2,7 +2,7 @@ import argparse
 from cmath import inf
 
 from loader import MoleculeDataset
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 
 
 import torch
@@ -14,15 +14,28 @@ from tqdm import tqdm
 import numpy as np
 
 from model import GNN, GNN_graphpred
-from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, f1_score
 
-from splitters import scaffold_split, random_split
+from splitters import scaffold_split, random_split, chebi_split
 import pandas as pd
+import wandb
 
-
-
+from metrics import MacroF1
+from torchmetrics.classification import MultilabelF1Score
+import os 
 
 criterion = nn.BCEWithLogitsLoss(reduction = "none")
+
+
+def print_parameter_summary(module, title):
+    print(f"\n{title}")
+    print("-" * len(title))
+    total_params = 0
+    for name, param in module.named_parameters():
+        total_params += param.numel()
+        print(f"  {name}: shape={tuple(param.shape)}, requires_grad={param.requires_grad}")
+    print(f"Total parameters: {total_params:,}")
+
 
 def train(model, device, loader, optimizer):
     model.train()
@@ -105,6 +118,55 @@ def eval(args, model, device, loader):
 
     return eval_roc, loss
 
+def eval_chebi(args, model, device, loader):
+    """Multi-label evaluation for ChEBI: mean per-task ROC-AUC plus micro/macro
+    F1 (the standard chebai metric). Returns a dict of metrics."""
+    model.eval()
+    y_true = []
+    y_scores = []
+
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        batch = batch.to(device)
+        with torch.no_grad():
+            pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+        y_true.append(batch.y.view(pred.shape))
+        y_scores.append(pred)
+
+    y_true = torch.cat(y_true, dim=0).cpu().numpy()      # -1 / +1
+    y_scores = torch.cat(y_scores, dim=0).cpu().numpy()  # logits
+
+    # loss over all valid (non-missing) entries; ChEBI has no missing labels
+    is_valid = y_true ** 2 > 0
+    loss_mat = criterion(torch.tensor(y_scores).double(),
+                         torch.tensor((y_true + 1) / 2).double())
+    loss_mat = torch.where(torch.tensor(is_valid), loss_mat,
+                           torch.zeros_like(loss_mat))
+    loss = float(torch.sum(loss_mat) / max(int(is_valid.sum()), 1))
+
+    # per-task ROC-AUC, skipping tasks without both classes present
+    roc_list = []
+    for i in range(y_true.shape[1]):
+        if np.sum(y_true[:, i] == 1) > 0 and np.sum(y_true[:, i] == -1) > 0:
+            valid_i = y_true[:, i] ** 2 > 0
+            roc_list.append(roc_auc_score((y_true[valid_i, i] + 1) / 2,
+                                          y_scores[valid_i, i]))
+    eval_roc = sum(roc_list) / len(roc_list) if roc_list else 0.0
+
+    # micro / macro F1 at logit threshold 0
+    y_true_bin = (y_true + 1) / 2          # 0 / 1
+    y_pred_bin = (y_scores > 0).astype(int)
+    # micro_f1 = f1_score(y_true_bin, y_pred_bin, average='micro', zero_division=0)
+    # macro_f1 = f1_score(y_true_bin, y_pred_bin, average='macro', zero_division=0)
+    micro_f1_obj = MultilabelF1Score(num_labels=y_true.shape[1], average="macro")
+    macro_f1_obj = MacroF1(num_labels=y_true.shape[1])
+
+    micro_f1 = micro_f1_obj(torch.tensor(y_pred_bin), torch.tensor(y_true_bin))
+    macro_f1 = macro_f1_obj(torch.tensor(y_pred_bin), torch.tensor(y_true_bin))
+
+    return {'auc': eval_roc, 'micro_f1': micro_f1, 'macro_f1': macro_f1,
+            'loss': loss}
+
+
 def eval_reg(args, model, device, loader):
     model.eval()
     y_true = []
@@ -149,10 +211,10 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch implementation of pre-training of graph neural networks')
     parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
-    parser.add_argument('--batch_size', type=int, default=32,
-                        help='input batch size for training (default: 32)')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='number of epochs to train (default: 100)')
+    parser.add_argument('--batch_size', type=int, default=128,
+                        help='input batch size for training (default: 128)')
+    parser.add_argument('--epochs', type=int, default=200,
+                        help='number of epochs to train (default: 200)')
     parser.add_argument('--lr_feat', type=float, default=0.001,
                         help='learning rate (default: 0.001)')
     parser.add_argument('--lr_pred', type=float, default=0.001,
@@ -169,18 +231,32 @@ def main():
                         help='how the node features across layers are combined. last, sum, max or concat')
     parser.add_argument('--gnn_type', type=str, default="gin",
                         help='gnn_type (gat, gin, gcn, graphsage)')
-    parser.add_argument('--dataset', type=str, default = 'esol', 
-                        help='[bbbp, bace, sider, clintox, sider,tox21, toxcast, esol,freesolv,lipophilicity]')
+    parser.add_argument('--dataset', type=str, default = 'chebi', 
+                        help='[chebi, bbbp, bace, sider, clintox, sider,tox21, toxcast, esol,freesolv,lipophilicity]')
     parser.add_argument('--input_model_file', type=str, default = '../saved_model/pretrain.pth', help='filename to read the model (if there is any)')
     parser.add_argument('--filename', type=str, default = '', help='output filename')
     parser.add_argument('--seed', type=int, default=42, help = "Seed for splitting the dataset.")
     parser.add_argument('--runseed', type=int, default=0, help = "Seed for minibatch selection, random initialization.")
     parser.add_argument('--split', type = str, default="scaffold", help = "random or scaffold or random_scaffold")
+    parser.add_argument('--split_file', type=str, default='',
+                        help='python-chebai split CSV (id,split); required for --dataset chebi')
     parser.add_argument('--eval_train', type=int, default = 1, help='evaluating training or not')
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     parser.add_argument('--GNN_para', type=bool, default = True, help='if the parameter of pretrain update')
+    parser.add_argument('--wandb_entity', type=str, default='chebai',
+                        help='Weights & Biases entity (username or team name)')
+    parser.add_argument('--wandb_project', type=str, default='himol',
+                        help='Weights & Biases project name')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                        help='Weights & Biases run name (default: dataset-seed)')
+    parser.add_argument('--wandb_mode', type=str, default='online',
+                        choices=['online', 'offline', 'disabled'],
+                        help='Weights & Biases mode (use "disabled" to turn off logging)')
     args = parser.parse_args()
 
+    run_name = args.wandb_run_name or ('%s-run%d' % (args.dataset, args.runseed))
+    run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, name=run_name,
+                     mode=args.wandb_mode, config=vars(args))
 
     torch.manual_seed(args.runseed)
     np.random.seed(args.runseed)
@@ -188,7 +264,7 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.runseed)
 
-    if args.dataset in ['tox21', 'hiv', 'pcba', 'muv', 'bace', 'bbbp', 'toxcast', 'sider', 'clintox', 'mutag']:
+    if args.dataset in ['tox21', 'hiv', 'pcba', 'muv', 'bace', 'bbbp', 'toxcast', 'sider', 'clintox', 'mutag', 'chebi']:
         task_type = 'cls'
     else:
         task_type = 'reg'
@@ -220,16 +296,28 @@ def main():
         num_tasks = 12
     elif args.dataset == 'qm9':
         num_tasks = 12
+    elif args.dataset == 'chebi':
+        # one task per ChEBI class, derived from the raw classes.txt
+        with open('dataset/chebi/raw/classes.txt', encoding='utf-8') as f:
+            num_tasks = sum(1 for line in f if line.strip() != '')
     else:
         raise ValueError("Invalid dataset name.")
 
-   
     #set up dataset
     dataset = MoleculeDataset("dataset/" + args.dataset, dataset=args.dataset)
-
+    
     print(dataset)
     
-    if args.split == "scaffold":
+    if args.dataset == 'chebi':
+        print("Using ChEBI dataset")
+        if args.split_file == '':
+            raise ValueError("--split_file is required for --dataset chebi")
+        ids_list = pd.read_csv('dataset/chebi/processed/chebi_ids.csv',
+                               header=None, dtype=str)[0].tolist()
+        train_dataset, valid_dataset, test_dataset = chebi_split(
+            dataset, ids_list, args.split_file)
+        print("chebi split from %s" % args.split_file)
+    elif args.split == "scaffold":
         smiles_list = pd.read_csv('dataset/' + args.dataset + '/processed/smiles.csv', header=None)[0].tolist()
         train_dataset, valid_dataset, test_dataset, _ = scaffold_split(dataset, smiles_list, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1)
         print("scaffold")
@@ -255,6 +343,13 @@ def main():
     
     model.to(device)
 
+    if args.dataset == 'chebi':
+        print_parameter_summary(model.gnn, "GNN model parameters")
+        print_parameter_summary(model.graph_pred_linear, "Classification head parameters")
+        head_out_features = getattr(model.graph_pred_linear, "out_features", None)
+        if head_out_features is not None:
+            print(f"Classification head output size: {head_out_features}")
+
     #set up optimizer
     #different learning rate for different part of GNN
     model_param_group = []
@@ -268,14 +363,46 @@ def main():
     print(optimizer)
 
     finetune_model_save_path = './model_checkpoints/' + args.dataset + '.pth'
+    os.makedirs(os.path.dirname(finetune_model_save_path), exist_ok=True)
 
    
     # training based on task type
-    if task_type == 'cls':
+    if task_type == 'cls' and args.dataset == 'chebi':
+        # multi-label: report both micro/macro F1 (chebai standard) and mean AUC
+        for epoch in range(1, args.epochs + 1):
+            print('====epoch:', epoch)
+
+            train(model, device, train_loader, optimizer)
+
+            print('====Evaluation')
+            log = {'epoch': epoch}
+            if args.eval_train:
+                train_m = eval_chebi(args, model, device, train_loader)
+                for k, v in train_m.items():
+                    log['train/' + k] = v
+            else:
+                print('omit the training accuracy computation')
+            val_m = eval_chebi(args, model, device, val_loader)
+            test_m = eval_chebi(args, model, device, test_loader)
+            for k, v in val_m.items():
+                log['val/' + k] = v
+            for k, v in test_m.items():
+                log['test/' + k] = v
+
+            torch.save(model.state_dict(), finetune_model_save_path)
+
+            print("val   micro_f1: %f macro_f1: %f auc: %f" %
+                  (val_m['micro_f1'], val_m['macro_f1'], val_m['auc']))
+            print("test  micro_f1: %f macro_f1: %f auc: %f" %
+                  (test_m['micro_f1'], test_m['macro_f1'], test_m['auc']))
+
+            run.log(log)
+
+    elif task_type == 'cls':
         train_auc_list, test_auc_list = [], []
         for epoch in range(1, args.epochs+1):
             print('====epoch:',epoch)
-            
+
             train(model, device, train_loader, optimizer)
 
             print('====Evaluation')
@@ -290,8 +417,13 @@ def main():
             train_auc_list.append(float('{:.4f}'.format(train_auc)))
 
             torch.save(model.state_dict(), finetune_model_save_path)
-            
+
             print("train_auc: %f val_auc: %f test_auc: %f" %(train_auc, val_auc, test_auc))
+
+            run.log({'epoch': epoch,
+                     'train/auc': train_auc, 'val/auc': val_auc, 'test/auc': test_auc,
+                     'train/loss': float(train_loss), 'val/loss': float(val_loss),
+                     'test/loss': float(test_loss)})
 
 
     elif task_type == 'reg':
@@ -323,6 +455,13 @@ def main():
             print("train_mse: %f val_mse: %f test_mse: %f" %(train_mse, val_mse, test_mse))
             print("train_mae: %f val_mae: %f test_mae: %f" %(train_mae, val_mae, test_mae))
             print("train_rmse: %f val_rmse: %f test_rmse: %f" %(train_rmse, val_rmse, test_rmse))
+
+            run.log({'epoch': epoch,
+                     'train/mse': train_mse, 'val/mse': val_mse, 'test/mse': test_mse,
+                     'train/mae': train_mae, 'val/mae': val_mae, 'test/mae': test_mae,
+                     'train/rmse': train_rmse, 'val/rmse': val_rmse, 'test/rmse': test_rmse})
+
+    run.finish()
 
 
 

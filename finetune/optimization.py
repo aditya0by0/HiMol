@@ -369,7 +369,7 @@ def main():
             logger.info("best_epoch_val: {}, patient: {}".format(best_epoch_val, patient))
             logger.info("train_loss: {}, val_loss: {}, test_loss: {}".format(train_loss, val_loss, test_loss))
             logger.info("train: {}, val: {}, test: {}".format(train_auc, val_auc, test_auc))
-        model.load_state_dict(torch.load(finetune_model_save_path))
+        model.load_state_dict(torch.load(finetune_model_save_path, weights_only=False))
 
     elif task_type == 'reg':
         for epoch in range(1, args.epochs+1):

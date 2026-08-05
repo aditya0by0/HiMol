@@ -113,6 +113,45 @@ def scaffold_split(dataset, smiles_list, task_idx=None, null_value=0,
                                                             valid_smiles,
                                                             test_smiles)
 
+def chebi_split(dataset, ids_list, split_file):
+    """Split the ChEBI dataset using a python-chebai split CSV.
+
+    :param dataset: pytorch geometric dataset obj
+    :param ids_list: chebi_id (str) per molecule, aligned to dataset order
+        (read from processed/chebi_ids.csv)
+    :param split_file: CSV with columns 'id','split' where split is one of
+        'train','validation','test'. Joined on chebi_id. Molecules whose id is
+        absent from the file are dropped.
+    :return: train, valid, test slices of the input dataset obj
+    """
+    import pandas as pd
+
+    split_df = pd.read_csv(split_file)
+    id_to_split = {str(i): s for i, s in zip(split_df['id'], split_df['split'])}
+
+    train_idx, valid_idx, test_idx, missing = [], [], [], 0
+    for i, cid in enumerate(ids_list):
+        s = id_to_split.get(str(cid))
+        if s == 'train':
+            train_idx.append(i)
+        elif s in ('validation', 'valid', 'val'):
+            valid_idx.append(i)
+        elif s == 'test':
+            test_idx.append(i)
+        else:
+            missing += 1
+
+    print('chebi split: train %d, valid %d, test %d, dropped %d (not in split file)'
+          % (len(train_idx), len(valid_idx), len(test_idx), missing))
+    assert len(train_idx) > 0 and len(valid_idx) > 0 and len(test_idx) > 0, \
+        'chebi split produced an empty subset; check that split_file ids match'
+
+    train_dataset = dataset[torch.tensor(train_idx)]
+    valid_dataset = dataset[torch.tensor(valid_idx)]
+    test_dataset = dataset[torch.tensor(test_idx)]
+    return train_dataset, valid_dataset, test_dataset
+
+
 def random_scaffold_split(dataset, smiles_list, task_idx=None, null_value=0,
                    frac_train=0.8, frac_valid=0.1, frac_test=0.1, seed=0):
     """

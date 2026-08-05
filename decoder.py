@@ -78,7 +78,7 @@ class Model_decoder(nn.Module):
         super_rep = torch.stack(super_group, dim=0)
         return super_rep
     
-    def topo_pred(self, mol_batch, node_rep, super_node_rep):
+    def topo_pred(self, mol_batch, node_rep, super_node_rep, compute_metrics=True):
         bond_if_loss, bond_if_auc, bond_if_ap = 0, 0, 0
         bond_type_loss, bond_type_acc = 0, 0
         atom_type_loss, atom_type_acc = 0, 0
@@ -120,9 +120,13 @@ class Model_decoder(nn.Module):
                 bond_if_pred = self.bond_if_s(bond_if_input).squeeze(-1)
                 a = torch.zeros(num_atoms, num_atoms)
                 bond_if_target = a.index_put(indices=[mol.edge_index_nosuper[0,:], mol.edge_index_nosuper[1,:]], values=torch.tensor(1.)).to(self.device)
-                bond_if_loss += self.bond_pred_loss(bond_if_pred, bond_if_target) 
-                bond_if_auc += roc_auc_score(bond_if_target.flatten().cpu().detach(), torch.sigmoid(bond_if_pred.flatten().cpu().detach())) 
-                bond_if_ap += average_precision_score(bond_if_target.cpu().detach(), torch.sigmoid(bond_if_pred.cpu().detach())) 
+                bond_if_loss += self.bond_pred_loss(bond_if_pred, bond_if_target)
+                # roc_auc_score / average_precision_score are monitoring-only
+                # (not part of the loss) and each forces a GPU->CPU sync over an
+                # O(num_atoms^2) tensor, so only compute them on sampled steps.
+                if compute_metrics:
+                    bond_if_auc += roc_auc_score(bond_if_target.flatten().cpu().detach(), torch.sigmoid(bond_if_pred.flatten().cpu().detach()))
+                    bond_if_ap += average_precision_score(bond_if_target.cpu().detach(), torch.sigmoid(bond_if_pred.cpu().detach()))
 
                 start_rep = mol_atom_rep_proj.index_select(0, mol.edge_index_nosuper[0,:].to(self.device))
                 end_rep = mol_atom_rep_proj.index_select(0, mol.edge_index_nosuper[1,:].to(self.device))
@@ -148,12 +152,18 @@ class Model_decoder(nn.Module):
                 pred_acc = torch.eq(preds, atom_type_target).float()
                 atom_type_acc += (torch.sum(pred_acc) / atom_type_target.nelement()) 
         loss_tur = [bond_if_loss/mol_num, bond_type_loss/mol_num, atom_type_loss/mol_num, atom_num_loss, bond_num_loss]
-        results = [bond_if_auc/mol_num, bond_if_ap/mol_num, bond_type_acc/mol_num, atom_type_acc/mol_num, atom_num_rmse, bond_num_rmse]
+        if compute_metrics:
+            bond_if_auc = bond_if_auc/mol_num
+            bond_if_ap = bond_if_ap/mol_num
+        else:
+            bond_if_auc = float('nan')
+            bond_if_ap = float('nan')
+        results = [bond_if_auc, bond_if_ap, bond_type_acc/mol_num, atom_type_acc/mol_num, atom_num_rmse, bond_num_rmse]
 
         return loss_tur, results
 
-    def forward(self, mol_batch, node_rep, super_node_rep):
-        loss_tur, results = self.topo_pred(mol_batch, node_rep, super_node_rep)
+    def forward(self, mol_batch, node_rep, super_node_rep, compute_metrics=True):
+        loss_tur, results = self.topo_pred(mol_batch, node_rep, super_node_rep, compute_metrics)
         loss = 0
         loss_weight = create_var(torch.rand(5),self.device, requires_grad=True)
         loss_wei = torch.softmax(loss_weight, dim=-1)

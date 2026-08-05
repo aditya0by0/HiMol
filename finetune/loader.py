@@ -460,12 +460,12 @@ class MoleculeDataset(InMemoryDataset):
         self.transform, self.pre_transform, self.pre_filter = transform, pre_transform, pre_filter
 
         if not empty:
-            self.data, self.slices = torch.load(self.processed_paths[0])
+            self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
 
     def get(self, idx):
         data = Data()
-        for key in self.data.keys:
+        for key in self.data.keys():
             item, slices = self.data[key], self.slices[key]
             s = list(repeat(slice(None), item.dim()))
             s[data.__cat_dim__(key, item)] = slice(slices[idx],
@@ -618,6 +618,38 @@ class MoleculeDataset(InMemoryDataset):
                         data_smiles_list.append(smiles_list[i])
                 except:
                     continue
+
+        elif self.dataset == 'chebi':
+            smiles_list, rdkit_mol_objs, ids_list, labels = \
+                _load_chebi_dataset(self.raw_dir)
+            chebi_ids_kept = []
+            skipped = 0
+            for i in range(len(smiles_list)):
+                if i % 10000 == 0:
+                    print(i)
+                rdkit_mol = rdkit_mol_objs[i]
+                if rdkit_mol is None:
+                    skipped += 1
+                    continue
+                # ~8% of ChEBI molecules contain wildcard atoms (atomic num 0)
+                # which HiMol's atom vocabulary cannot encode; skip those (and
+                # any other featurization failure) instead of crashing.
+                try:
+                    data = mol_to_graph_data_obj_simple(rdkit_mol)
+                except Exception:
+                    skipped += 1
+                    continue
+                data.id = torch.tensor([int(ids_list[i])])  # chebi_id (split key)
+                data.y = torch.tensor(labels[i, :])
+                data_list.append(data)
+                data_smiles_list.append(smiles_list[i])
+                chebi_ids_kept.append(ids_list[i])
+            print('chebi: kept %d, skipped %d (wildcard/failed)' %
+                  (len(chebi_ids_kept), skipped))
+            # chebi_id per kept molecule, aligned to dataset order, for the split join
+            pd.Series(chebi_ids_kept).to_csv(
+                os.path.join(self.processed_dir, 'chebi_ids.csv'),
+                index=False, header=False)
 
         elif self.dataset == 'tox21':
             smiles_list, rdkit_mol_objs, labels = \
@@ -1171,6 +1203,36 @@ class MoleculeFingerprintDataset(data.Dataset):
             return dataset
         else:
             return self.data_list[index]
+
+
+def _load_chebi_dataset(raw_dir):
+    """Load the ChEBI raw files produced by prepare_chebi.py.
+
+    :param raw_dir: dataset/chebi/raw containing smiles.txt, ids.txt, labels.npy
+    :return: (smiles_list, rdkit_mol_objs_list, ids_list, labels) where labels
+        is an int8 np.array in {-1, +1} (False->-1, True->+1) matching HiMol's
+        convention (0 would mean "missing", of which ChEBI has none).
+    """
+    # Keep interior empty SMILES (None-mol rows) to preserve alignment with
+    # labels; only drop the trailing newline artifact at end-of-file.
+    with open(os.path.join(raw_dir, 'smiles.txt'), encoding='utf-8') as f:
+        smiles_list = f.read().split('\n')
+    if smiles_list and smiles_list[-1] == '':
+        smiles_list = smiles_list[:-1]
+    with open(os.path.join(raw_dir, 'ids.txt'), encoding='utf-8') as f:
+        ids_list = f.read().split('\n')
+    if ids_list and ids_list[-1] == '':
+        ids_list = ids_list[:-1]
+    labels = np.load(os.path.join(raw_dir, 'labels.npy'))  # int8 0/1
+    labels = (labels.astype(np.int8) * 2 - 1)              # -> -1/+1
+
+    assert len(smiles_list) == len(ids_list) == labels.shape[0], \
+        'chebi raw files misaligned: %d smiles, %d ids, %d labels' % (
+            len(smiles_list), len(ids_list), labels.shape[0])
+
+    rdkit_mol_objs_list = [AllChem.MolFromSmiles(s) if s != '' else None
+                           for s in smiles_list]
+    return smiles_list, rdkit_mol_objs_list, ids_list, labels
 
 
 def _load_tox21_dataset(input_path):
