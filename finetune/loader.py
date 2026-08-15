@@ -1,23 +1,58 @@
-import os
-import torch
-import pickle
 import collections
 import math
-import pandas as pd
-import numpy as np
+import os
+import pickle
+from itertools import chain, product, repeat
+
 import networkx as nx
-from rdkit import Chem
-from rdkit.Chem import Descriptors
-from rdkit.Chem import AllChem
-from rdkit.Chem import BRICS
-from rdkit import DataStructs
+import numpy as np
+import pandas as pd
+import torch
+from rdkit import Chem, DataStructs
+from rdkit.Chem import BRICS, AllChem, Descriptors
 from rdkit.Chem.rdMolDescriptors import GetMorganFingerprintAsBitVect
 from torch.utils import data
-from torch_geometric.data import Data
-from torch_geometric.data import InMemoryDataset
-from torch_geometric.data import Batch
-from itertools import repeat, product, chain
-from chemutils import get_mol, get_clique_mol
+from torch_geometric.data import Batch, Data, InMemoryDataset
+
+from chemutils import get_clique_mol, get_mol
+
+DEEPCHEM_MOLNET_DATASETS = {
+    'bace',
+    'bbbp',
+    'hiv',
+    'muv',
+    'pcba',
+    'sider',
+    'clintox',
+    'tox21',
+    'toxcast',
+}
+
+
+DEEPCHEM_MOLNET_LOADERS = {
+    'bace': 'load_bace_classification',
+    'bbbp': 'load_bbbp',
+    'hiv': 'load_hiv',
+    'muv': 'load_muv',
+    'pcba': 'load_pcba',
+    'sider': 'load_sider',
+    'clintox': 'load_clintox',
+    'tox21': 'load_tox21',
+    'toxcast': 'load_toxcast',
+}
+
+
+DEEPCHEM_MOLNET_SPLITTERS = {
+    'bace': 'scaffold',
+    'bbbp': 'scaffold',
+    'hiv': 'scaffold',
+    'muv': 'scaffold',
+    'pcba': 'random',
+    'sider': 'random',
+    'clintox': 'random',
+    'tox21': 'random',
+    'toxcast': 'random',
+}
 
 
 # allowable node and edge features
@@ -476,6 +511,9 @@ class MoleculeDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self):
+        if self.dataset in DEEPCHEM_MOLNET_DATASETS:
+            os.makedirs(self.raw_dir, exist_ok=True)
+            return []
         file_name_list = os.listdir(self.raw_dir)
         # assert len(file_name_list) == 1     # currently assume we have a
         # # single raw file
@@ -651,23 +689,19 @@ class MoleculeDataset(InMemoryDataset):
                 os.path.join(self.processed_dir, 'chebi_ids.csv'),
                 index=False, header=False)
 
-        elif self.dataset == 'tox21':
-            smiles_list, rdkit_mol_objs, labels = \
-                _load_tox21_dataset(self.raw_paths[0])
+        elif self.dataset in DEEPCHEM_MOLNET_DATASETS:
+            smiles_list, rdkit_mol_objs, folds, labels = \
+                _load_deepchem_molnet_dataset(self.dataset, self.raw_dir)
             for i in range(len(smiles_list)):
                 print(i)
                 rdkit_mol = rdkit_mol_objs[i]
-                ## convert aromatic bonds to double bonds
-                #Chem.SanitizeMol(rdkit_mol,
-                                 #sanitizeOps=Chem.SanitizeFlags.SANITIZE_KEKULIZE)
-                data = mol_to_graph_data_obj_simple(rdkit_mol)
-                # manually add mol id
-                data.id = torch.tensor(
-                    [i])  # id here is the index of the mol in
-                # the dataset
-                data.y = torch.tensor(labels[i, :])
-                data_list.append(data)
-                data_smiles_list.append(smiles_list[i])
+                if rdkit_mol != None:
+                    data = mol_to_graph_data_obj_simple(rdkit_mol)
+                    data.id = torch.tensor([i])
+                    data.y = torch.tensor(labels[i, :])
+                    data.fold = torch.tensor([folds[i]])
+                    data_list.append(data)
+                    data_smiles_list.append(smiles_list[i])
 
         elif self.dataset == 'hiv':
             smiles_list, rdkit_mol_objs, labels = \
@@ -1234,6 +1268,88 @@ def _load_chebi_dataset(raw_dir):
                            for s in smiles_list]
     return smiles_list, rdkit_mol_objs_list, ids_list, labels
 
+
+def _load_deepchem_molnet_dataset(dataset_name, data_dir):
+    """
+    Load selected MoleculeNet datasets through DeepChem using the split
+    recommended by ChebAI's MoleculeNet classification extractors.
+
+    HiMol uses labels as training masks as well as targets:
+      1: active/positive label
+     -1: inactive/negative label
+      0: missing or unmeasured label, ignored by masked losses/metrics
+    """
+    try:
+        import deepchem as dc
+        from deepchem.feat.molecule_featurizers.raw_featurizer import RawFeaturizer
+    except ImportError as exc:
+        raise ImportError(
+            "DeepChem is required to process MoleculeNet datasets "
+            "(BACE, BBBP, HIV, MUV, PCBA, SIDER, ClinTox, Tox21, ToxCast). "
+            "Install deepchem and rerun dataset processing."
+        ) from exc
+
+    loader_name = DEEPCHEM_MOLNET_LOADERS[dataset_name]
+    splitter = DEEPCHEM_MOLNET_SPLITTERS[dataset_name]
+    loader = getattr(dc.molnet, loader_name)
+    tasks, datasets, _ = loader(
+        featurizer=RawFeaturizer(),
+        splitter=splitter,
+        transformers=[],
+        reload=True,
+        data_dir=data_dir,
+        save_dir=data_dir,
+    )
+    split_datasets = datasets if isinstance(datasets, tuple) else (datasets,)
+
+    rdkit_mol_objs_list = []
+    smiles_list = []
+    folds = []
+    labels_list = []
+    for fold, dc_dataset in enumerate(split_datasets):
+        labels = np.asarray(dc_dataset.y)
+        if labels.ndim == 1:
+            labels = labels.reshape(-1, 1)
+
+        labels = labels.astype(float, copy=True)
+        weights = getattr(dc_dataset, 'w', None)
+        if weights is not None:
+            weights = np.asarray(weights)
+            if weights.ndim == 1:
+                weights = weights.reshape(-1, 1)
+            labels[weights == 0] = 0
+        labels[labels == 0] = -1
+        if weights is not None:
+            labels[weights == 0] = 0
+
+        ids = getattr(dc_dataset, 'ids', [None] * len(labels))
+        for raw_feature, mol_id, label in zip(dc_dataset.X, ids, labels):
+            if isinstance(raw_feature, Chem.rdchem.Mol):
+                mol = raw_feature
+            elif isinstance(raw_feature, str):
+                mol = AllChem.MolFromSmiles(raw_feature)
+            elif isinstance(mol_id, str):
+                mol = AllChem.MolFromSmiles(mol_id)
+            else:
+                mol = None
+
+            rdkit_mol_objs_list.append(mol)
+            if mol is not None:
+                smiles_list.append(AllChem.MolToSmiles(mol))
+            elif isinstance(mol_id, str):
+                smiles_list.append(mol_id)
+            elif isinstance(raw_feature, str):
+                smiles_list.append(raw_feature)
+            else:
+                smiles_list.append(None)
+            folds.append(fold)
+            labels_list.append(label)
+
+    labels = np.asarray(labels_list)
+    assert len(smiles_list) == len(rdkit_mol_objs_list)
+    assert len(smiles_list) == len(folds)
+    assert len(smiles_list) == len(labels)
+    return smiles_list, rdkit_mol_objs_list, np.asarray(folds), labels
 
 def _load_tox21_dataset(input_path):
     """
