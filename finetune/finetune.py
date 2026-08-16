@@ -356,12 +356,11 @@ def main():
     
     model.to(device)
 
-    if args.dataset == 'chebi':
-        print_parameter_summary(model.gnn, "GNN model parameters")
-        print_parameter_summary(model.graph_pred_linear, "Classification head parameters")
-        head_out_features = getattr(model.graph_pred_linear, "out_features", None)
-        if head_out_features is not None:
-            print(f"Classification head output size: {head_out_features}")
+    print_parameter_summary(model.gnn, "GNN model parameters")
+    print_parameter_summary(model.graph_pred_linear, "Classification head parameters")
+    head_out_features = getattr(model.graph_pred_linear, "out_features", None)
+    if head_out_features is not None:
+        print(f"Classification head output size: {head_out_features}")
 
     #set up optimizer
     #different learning rate for different part of GNN
