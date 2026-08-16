@@ -465,7 +465,7 @@ class MoleculeDataset(InMemoryDataset):
 
     def get(self, idx):
         data = Data()
-        for key in self.data.keys:
+        for key in self.data.keys():
             item, slices = self.data[key], self.slices[key]
             s = list(repeat(slice(None), item.dim()))
             s[data.__cat_dim__(key, item)] = slice(slices[idx],
