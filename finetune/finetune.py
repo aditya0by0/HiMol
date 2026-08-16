@@ -66,6 +66,7 @@ def eval(args, model, device, loader):
     model.eval()
     y_true = []
     y_scores = []
+    loss_sum, valid_sum = 0.0, 0.0
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
@@ -77,18 +78,19 @@ def eval(args, model, device, loader):
         y_true.append(batch.y.view(pred.shape))
         y_scores.append(pred)
 
+        #Whether y is non-null or not.
+        y = batch.y.view(pred.shape).to(torch.float64)
+        is_valid = y**2 > 0
+        #Loss matrix
+        loss_mat = criterion(pred.double(), (y+1)/2)
+        #loss matrix after removing null target
+        loss_mat = torch.where(is_valid, loss_mat, torch.zeros(loss_mat.shape).to(loss_mat.device).to(loss_mat.dtype))
+        loss_sum += torch.sum(loss_mat).item()
+        valid_sum += torch.sum(is_valid).item()
+
     y_true = torch.cat(y_true, dim = 0).cpu().numpy()
     y_scores = torch.cat(y_scores, dim = 0).cpu().numpy()
-
-    #Whether y is non-null or not.
-    y = batch.y.view(pred.shape).to(torch.float64)
-    is_valid = y**2 > 0
-    #Loss matrix
-    loss_mat = criterion(pred.double(), (y+1)/2)
-    #loss matrix after removing null target
-    loss_mat = torch.where(is_valid, loss_mat, torch.zeros(loss_mat.shape).to(loss_mat.device).to(loss_mat.dtype))
-    loss = torch.sum(loss_mat)/torch.sum(is_valid)
-
+    loss = loss_sum / valid_sum
 
     roc_list = []
     for i in range(y_true.shape[1]):
