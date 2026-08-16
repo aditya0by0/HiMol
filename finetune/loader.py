@@ -694,7 +694,7 @@ class MoleculeDataset(InMemoryDataset):
             smiles_list, rdkit_mol_objs, folds, labels = \
                 _load_deepchem_molnet_dataset(self.dataset, self.raw_dir)
             for i in range(len(smiles_list)):
-                print(i)
+                # print(i)
                 rdkit_mol = rdkit_mol_objs[i]
                 if rdkit_mol != None:
                     data = mol_to_graph_data_obj_simple(rdkit_mol)

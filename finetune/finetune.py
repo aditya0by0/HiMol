@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-from loader import MoleculeDataset
+from loader import DEEPCHEM_MOLNET_DATASETS, MoleculeDataset
 from metrics import MacroF1
 from model import GNN, GNN_graphpred
 from sklearn.metrics import (
@@ -316,6 +316,20 @@ def main():
         train_dataset, valid_dataset, test_dataset = chebi_split(
             dataset, ids_list, args.split_file)
         print("chebi split from %s" % args.split_file)
+    if args.dataset in DEEPCHEM_MOLNET_DATASETS:
+        train_idx, valid_idx, test_idx = [], [], []
+        for i, data in enumerate(dataset):
+            fold = data.fold.item()
+            if fold == 0:
+                train_idx.append(i)
+            elif fold == 1:
+                valid_idx.append(i)
+            elif fold == 2:
+                test_idx.append(i)
+        train_dataset = dataset[torch.tensor(train_idx)]
+        valid_dataset = dataset[torch.tensor(valid_idx)]
+        test_dataset = dataset[torch.tensor(test_idx)]
+        print("deepchem molnet split")
     elif args.split == "scaffold":
         smiles_list = pd.read_csv('dataset/' + args.dataset + '/processed/smiles.csv', header=None)[0].tolist()
         train_dataset, valid_dataset, test_dataset, _ = scaffold_split(dataset, smiles_list, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1)
