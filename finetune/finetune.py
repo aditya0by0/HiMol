@@ -1,28 +1,27 @@
 import argparse
+import os
 from cmath import inf
 
-from loader import MoleculeDataset
-from torch_geometric.loader import DataLoader
-
-
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-
-from tqdm import tqdm
-import numpy as np
-
-from model import GNN, GNN_graphpred
-from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, f1_score
-
-from splitters import scaffold_split, random_split, chebi_split
-import pandas as pd
 import wandb
-
+from loader import MoleculeDataset
 from metrics import MacroF1
+from model import GNN, GNN_graphpred
+from sklearn.metrics import (
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    roc_auc_score,
+)
+from splitters import chebi_split, random_split, scaffold_split
+from torch_geometric.loader import DataLoader
 from torchmetrics.classification import MultilabelF1Score
-import os 
+from tqdm import tqdm
 
 criterion = nn.BCEWithLogitsLoss(reduction = "none")
 
@@ -245,7 +244,7 @@ def main():
     parser.add_argument('--GNN_para', type=bool, default = True, help='if the parameter of pretrain update')
     parser.add_argument('--wandb_entity', type=str, default='chebai',
                         help='Weights & Biases entity (username or team name)')
-    parser.add_argument('--wandb_project', type=str, default='himol',
+    parser.add_argument('--wandb_project', type=str, default='chebai',
                         help='Weights & Biases project name')
     parser.add_argument('--wandb_run_name', type=str, default=None,
                         help='Weights & Biases run name (default: dataset-seed)')

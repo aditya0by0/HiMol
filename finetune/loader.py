@@ -513,7 +513,7 @@ class MoleculeDataset(InMemoryDataset):
     def raw_file_names(self):
         if self.dataset in DEEPCHEM_MOLNET_DATASETS:
             os.makedirs(self.raw_dir, exist_ok=True)
-            return []
+            return ['.deepchem_dataset_ready']
         file_name_list = os.listdir(self.raw_dir)
         # assert len(file_name_list) == 1     # currently assume we have a
         # # single raw file
@@ -524,6 +524,8 @@ class MoleculeDataset(InMemoryDataset):
         return 'geometric_data_processed.pt'
 
     def download(self):
+        if self.dataset in DEEPCHEM_MOLNET_DATASETS:
+            return
         raise NotImplementedError('Must indicate valid location of raw data. '
                                   'No download allowed')
 
@@ -538,7 +540,6 @@ class MoleculeDataset(InMemoryDataset):
             smiles_list = list(input_df['smiles'])
             zinc_id_list = list(input_df['zinc_id'])
             for i in range(len(smiles_list)):
-                print(i)
                 s = smiles_list[i]
                 # each example contains a single species
                 try:
