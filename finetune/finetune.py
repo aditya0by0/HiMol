@@ -411,7 +411,8 @@ def main():
             run.log(log)
 
     elif task_type == 'cls':
-        train_auc_list, test_auc_list = [], []
+        best_epoch_val = -1.0
+        best_epoch_number = 0
         for epoch in range(1, args.epochs+1):
             print('====epoch:',epoch)
 
@@ -424,18 +425,23 @@ def main():
                 print('omit the training accuracy computation')
                 train_auc = 0
             val_auc, val_loss = eval(args, model, device, val_loader)
-            test_auc, test_loss = eval(args, model, device, test_loader)
-            test_auc_list.append(float('{:.4f}'.format(test_auc)))
-            train_auc_list.append(float('{:.4f}'.format(train_auc)))
 
-            torch.save(model.state_dict(), finetune_model_save_path)
+            if val_auc > best_epoch_val:  
+                best_epoch_val = val_auc
+                best_epoch_number = epoch
+                torch.save(model.state_dict(), finetune_model_save_path)
 
-            print("train_auc: %f val_auc: %f test_auc: %f" %(train_auc, val_auc, test_auc))
+            print("train_auc: %f val_auc: %f" %(train_auc, val_auc))
 
             run.log({'epoch': epoch,
-                     'train/auc': train_auc, 'val/auc': val_auc, 'test/auc': test_auc,
+                     'train/auc': train_auc, 'val/auc': val_auc,
                      'train/loss': float(train_loss), 'val/loss': float(val_loss),
-                     'test/loss': float(test_loss)})
+                     })
+                
+        model.load_state_dict(torch.load(finetune_model_save_path))
+        test_auc, test_loss = eval(args, model, device, test_loader)
+        print("best epoch %d val_auc: %f test_auc: %f" %(best_epoch_number, best_epoch_val, test_auc))
+
 
 
     elif task_type == 'reg':
