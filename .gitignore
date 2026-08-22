@@ -28,3 +28,4 @@ wandb/
 *.json
 
 !.vscode/launch.json
+*.log
