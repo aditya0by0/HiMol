@@ -57,7 +57,7 @@ DEEPCHEM_MOLNET_SPLITTERS = {
 
 # allowable node and edge features
 allowable_features = {
-    'possible_atomic_num_list' : list(range(1, 119)),
+    'possible_atomic_num_list' : list(range(0, 119)),
     'possible_formal_charge_list' : [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
     'possible_chirality_list' : [
         Chem.rdchem.ChiralType.CHI_UNSPECIFIED,
@@ -78,7 +78,8 @@ allowable_features = {
         Chem.rdchem.BondType.SINGLE,
         Chem.rdchem.BondType.DOUBLE,
         Chem.rdchem.BondType.TRIPLE,
-        Chem.rdchem.BondType.AROMATIC
+        Chem.rdchem.BondType.AROMATIC,
+        Chem.rdchem.BondType.DATIVE,
     ],
     'possible_bond_dirs' : [ # only for double bond stereo information
         Chem.rdchem.BondDir.NONE,
