@@ -303,7 +303,10 @@ def main():
         raise ValueError("Invalid dataset name.")
 
     #set up dataset
-    dataset = MoleculeDataset("dataset/" + args.dataset, dataset=args.dataset)
+    # set np to data seed for splitting the dataset, deepchem molnet uses np
+    np.random.seed(args.seed) 
+    dataset = MoleculeDataset("dataset/" + args.dataset, dataset=args.dataset )
+    np.random.seed(args.runseed) # reset np to run seed for training
     
     print(dataset)
     
